@@ -1,0 +1,5 @@
+flask>=3.0
+requests>=2.31
+openai>=1.30
+chromadb>=0.5
+rank_bm25>=0.2

@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Venice Cicchetti — Admin</title>
+<style>
+  :root { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { max-width: 720px; margin: 40px auto; padding: 0 20px; color: #222; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.05rem; }
+  section { margin-bottom: 24px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
+  label { display: block; font-size: 0.85rem; color: #555; margin-bottom: 4px; }
+  input, select { width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; font-size: 0.95rem; }
+  button { padding: 8px 14px; border: none; border-radius: 4px; background: #2b6cb0; color: white; cursor: pointer; font-size: 0.9rem; margin-right: 8px; margin-bottom: 8px; }
+  button:hover { background: #234e8c; }
+  button.secondary { background: #718096; }
+  button.accent { background: #2f855a; }
+  button.accent:hover { background: #276749; }
+  .status { font-size: 0.85rem; margin-top: 8px; color: #555; }
+  .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .summary-grid div.card { background: #f7f7f7; padding: 10px; border-radius: 6px; font-size: 0.85rem; }
+  .summary-grid .num { font-size: 1.4rem; font-weight: 600; display: block; }
+  .result-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #eee; font-size: 0.88rem; }
+  .result-row:last-child { border-bottom: none; }
+  .result-row .n { font-weight: 600; }
+  .result-row .detail { color: #666; }
+  .answer-box { background: #f5f5f5; padding: 12px; border-radius: 6px; font-weight: 600; margin: 10px 0; }
+  .source-item { border-left: 4px solid #2b6cb0; background: #fafafa; padding: 10px 12px; margin-bottom: 8px; font-size: 0.88rem; }
+  .source-item.unconfirmed { border-left-color: #ccc; }
+  .source-item .n { font-weight: 700; }
+  .source-item .meta { color: #666; }
+  .source-item .address { margin-top: 4px; }
+  .source-item .links { margin-top: 2px; font-size: 0.85rem; }
+  .source-item .explanation { margin-top: 6px; }
+  .source-item .badge { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 4px; font-size: 0.72rem; background: #eee; color: #666; }
+  .note { font-size: 0.85rem; color: #666; margin: 8px 0; }
+</style>
+</head>
+<body>
+<h1>Venice Cicchetti — Admin</h1>
+<p class="note"><a href="/discover" target="_blank">Open the public /discover page →</a></p>
+
+<section>
+  <h2>1. API keys</h2>
+  <label for="api_key">Google Places API (New) key</label>
+  <input id="api_key" type="password" placeholder="Paste your Places API (New) key">
+  <button onclick="saveKey()">Save key</button>
+  <div class="status" id="key_status"></div>
+
+  <label for="parallel_api_key" style="margin-top:14px;">Parallel API key</label>
+  <input id="parallel_api_key" type="password" placeholder="Paste your Parallel API key">
+  <button onclick="saveParallelKey()">Save key</button>
+  <div class="status" id="parallel_key_status"></div>
+
+  <label for="openai_api_key" style="margin-top:14px;">OpenAI API key</label>
+  <input id="openai_api_key" type="password" placeholder="Paste your OpenAI API key">
+  <button onclick="saveOpenaiKey()">Save key</button>
+  <div class="status" id="openai_key_status"></div>
+</section>
+
+<section>
+  <h2>2. Collect bars</h2>
+  <label for="neighborhood">Sestiere</label>
+  <select id="neighborhood">
+    <option value="Cannaregio">Cannaregio</option>
+    <option value="Castello">Castello</option>
+    <option value="San Marco">San Marco</option>
+    <option value="Dorsoduro">Dorsoduro</option>
+    <option value="San Polo">San Polo</option>
+    <option value="Santa Croce">Santa Croce</option>
+    <option value="All Venice">All Venice</option>
+  </select>
+  <button onclick="runCollection()">Run collection</button>
+  <button class="secondary" onclick="loadSummary()">Refresh summary</button>
+  <button class="secondary" onclick="exportCsv()">Export CSV</button>
+  <div class="status" id="collect_status"></div>
+  <div id="collect_result" style="display:none;margin-top:10px;"></div>
+</section>
+
+<section>
+  <h2>3. Enrich with cicchetti content</h2>
+  <p class="note">Uses the sestiere selected above and the Parallel key. For each bar with a website and no cicchetti content yet, extracts cicchetti/bacaro-specific details (small plates, ombra, counter service, menu, hours) from the site.</p>
+  <button class="accent" onclick="fetchCicchettiContent()">Fetch cicchetti content</button>
+  <div class="status" id="extract_status"></div>
+</section>
+
+<section>
+  <h2>4. Tag bars</h2>
+  <p class="note">Classifies each bar (that doesn't have tags yet) against the fixed tag list below, using the OpenAI key above. Powers the checkbox filters on the public /discover page. Run after collecting or enriching new bars.</p>
+  <button class="accent" onclick="tagBars()">Tag bars</button>
+  <div class="status" id="tag_status"></div>
+</section>
+
+<section>
+  <h2>5. Find Instagram links</h2>
+  <p class="note">For bars with a website but no Instagram link yet: first tries fetching the site directly and scanning it (free), then falls back to a Parallel full-page fetch (needs the Parallel key above) for sites the direct fetch can't read. Best-effort -- not every bar will get one.</p>
+  <button class="accent" onclick="findInstagram()">Find Instagram links</button>
+  <div class="status" id="instagram_status"></div>
+</section>
+
+<section>
+  <h2>6. Build search index</h2>
+  <p class="note">Rebuilds the vector + BM25 index from current database content, using the OpenAI key above. Run this after collecting or enriching new bars.</p>
+  <button class="accent" onclick="indexBars()">Index bars</button>
+  <div class="status" id="index_status"></div>
+</section>
+
+<section>
+  <h2>7. Search</h2>
+  <label for="rag_query">Question</label>
+  <input id="rag_query" type="text" placeholder="e.g. Where can I get good cicchetti near Rialto?">
+  <label for="rag_neighborhood">Sestiere</label>
+  <select id="rag_neighborhood">
+    <option value="All Venice">All Venice</option>
+    <option value="Cannaregio">Cannaregio</option>
+    <option value="Castello">Castello</option>
+    <option value="San Marco">San Marco</option>
+    <option value="Dorsoduro">Dorsoduro</option>
+    <option value="San Polo">San Polo</option>
+    <option value="Santa Croce">Santa Croce</option>
+  </select>
+  <label for="rag_top_n">Top results to retrieve</label>
+  <input id="rag_top_n" type="number" value="5" min="1" max="20" style="width:100px;">
+  <button onclick="ragSearch()">Search</button>
+  <div class="status" id="rag_status"></div>
+  <div id="rag_result" style="display:none;">
+    <div class="note" id="rag_meta"></div>
+    <div class="answer-box" id="rag_answer"></div>
+    <div id="rag_sources"></div>
+  </div>
+</section>
+
+<section>
+  <h2>8. Summary</h2>
+  <div class="summary-grid" id="summary">
+    <div class="card">Total bars<span class="num" id="s_total">–</span></div>
+    <div class="card">Avg rating<span class="num" id="s_rating">–</span></div>
+    <div class="card">With website<span class="num" id="s_website">–</span></div>
+    <div class="card">With reviews<span class="num" id="s_reviews">–</span></div>
+    <div class="card">With coordinates<span class="num" id="s_coords">–</span></div>
+  </div>
+</section>
+
+<script>
+async function saveKey() {
+  const key = document.getElementById('api_key').value.trim();
+  const statusEl = document.getElementById('key_status');
+  if (!key) { statusEl.textContent = 'Enter a key first.'; return; }
+  statusEl.textContent = 'Saving…';
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({api_key: key})
+    });
+    let data;
+    try {
+      data = await res.json();
+    } catch (parseErr) {
+      statusEl.textContent = `Server returned an unexpected response (HTTP ${res.status}). Check the terminal running app.py for an error.`;
+      return;
+    }
+    statusEl.textContent = res.ok ? `Saved (${data.masked_key})` : `Error: ${data.error}`;
+  } catch (networkErr) {
+    statusEl.textContent = `Could not reach the server: ${networkErr.message}. Is app.py still running?`;
+  }
+}
+
+async function checkKey() {
+  const res = await fetch('/api/settings');
+  const data = await res.json();
+  document.getElementById('key_status').textContent = data.has_key ? `Key on file (${data.masked_key})` : 'No key saved yet.';
+}
+
+async function runCollection() {
+  const neighborhood = document.getElementById('neighborhood').value;
+  const statusEl = document.getElementById('collect_status');
+  const resultEl = document.getElementById('collect_result');
+  statusEl.textContent = `Running collection for ${neighborhood}… this can take a minute or two.`;
+  resultEl.style.display = 'none';
+  const res = await fetch('/api/collect', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({neighborhood})
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    statusEl.textContent = `Error: ${data.error}`;
+    return;
+  }
+  statusEl.textContent = 'Done.';
+  resultEl.style.display = 'block';
+  resultEl.innerHTML = Object.entries(data.results).map(([name, stats]) => `
+    <div class="result-row">
+      <span class="n">${name}</span>
+      <span class="detail">${stats.saved} bars saved (${stats.candidates} found, ${stats.skipped_non_bar_type} not a bar type)</span>
+    </div>
+  `).join('');
+  loadSummary();
+}
+
+async function loadSummary() {
+  const neighborhood = document.getElementById('neighborhood').value;
+  const res = await fetch(`/api/summary?neighborhood=${encodeURIComponent(neighborhood)}`);
+  const data = await res.json();
+  document.getElementById('s_total').textContent = data.total;
+  document.getElementById('s_rating').textContent = data.avg_rating ?? '–';
+  document.getElementById('s_website').textContent = data.with_website;
+  document.getElementById('s_reviews').textContent = data.with_reviews;
+  document.getElementById('s_coords').textContent = data.with_coordinates;
+}
+
+function exportCsv() {
+  const neighborhood = document.getElementById('neighborhood').value;
+  window.location = `/api/export?neighborhood=${encodeURIComponent(neighborhood)}`;
+}
+
+async function saveParallelKey() {
+  const key = document.getElementById('parallel_api_key').value.trim();
+  const statusEl = document.getElementById('parallel_key_status');
+  if (!key) { statusEl.textContent = 'Enter a key first.'; return; }
+  statusEl.textContent = 'Saving…';
+  try {
+    const res = await fetch('/api/settings/parallel', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({api_key: key})
+    });
+    const data = await res.json();
+    statusEl.textContent = res.ok ? `Saved (${data.masked_key})` : `Error: ${data.error}`;
+  } catch (networkErr) {
+    statusEl.textContent = `Could not reach the server: ${networkErr.message}. Is app.py still running?`;
+  }
+}
+
+async function checkParallelKey() {
+  const res = await fetch('/api/settings/parallel');
+  const data = await res.json();
+  document.getElementById('parallel_key_status').textContent = data.has_key ? `Key on file (${data.masked_key})` : 'No key saved yet.';
+}
+
+let extractPollTimer = null;
+
+function renderExtractProgress(p) {
+  const statusEl = document.getElementById('extract_status');
+  if (p.total === 0) {
+    statusEl.textContent = `Nothing to process (${p.skipped} already have cicchetti content, or no bars have a website).`;
+    return;
+  }
+  const parts = [`${p.done} / ${p.total} done`];
+  if (p.errors) parts.push(`${p.errors} errors`);
+  parts.push(`${p.skipped} skipped (already filled)`);
+  statusEl.textContent = parts.join(', ') + (p.running ? '…' : ' — done.');
+}
+
+async function pollExtractProgress() {
+  const res = await fetch('/api/fetch-cicchetti-content/progress');
+  const p = await res.json();
+  renderExtractProgress(p);
+  if (!p.running) clearInterval(extractPollTimer);
+}
+
+async function fetchCicchettiContent() {
+  const neighborhood = document.getElementById('neighborhood').value;
+  const statusEl = document.getElementById('extract_status');
+  statusEl.textContent = 'Starting…';
+  const res = await fetch('/api/fetch-cicchetti-content', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({neighborhood})
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    statusEl.textContent = `Error: ${data.error}`;
+    return;
+  }
+  renderExtractProgress({total: data.total, done: 0, skipped: data.skipped, errors: 0, running: data.total > 0});
+  if (data.total > 0) {
+    if (extractPollTimer) clearInterval(extractPollTimer);
+    extractPollTimer = setInterval(pollExtractProgress, 1000);
+  }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str ?? '';
+  return div.innerHTML;
+}
+
+function escapeAttr(str) {
+  return escapeHtml(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+async function saveOpenaiKey() {
+  const key = document.getElementById('openai_api_key').value.trim();
+  const statusEl = document.getElementById('openai_key_status');
+  if (!key) { statusEl.textContent = 'Enter a key first.'; return; }
+  statusEl.textContent = 'Saving…';
+  try {
+    const res = await fetch('/api/settings/openai', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({api_key: key})
+    });
+    const data = await res.json();
+    statusEl.textContent = res.ok ? `Saved (${data.masked_key})` : `Error: ${data.error}`;
+  } catch (networkErr) {
+    statusEl.textContent = `Could not reach the server: ${networkErr.message}. Is app.py still running?`;
+  }
+}
+
+async function checkOpenaiKey() {
+  const res = await fetch('/api/settings/openai');
+  const data = await res.json();
+  document.getElementById('openai_key_status').textContent = data.has_key ? `Key on file (${data.masked_key})` : 'No key saved yet.';
+}
+
+let tagPollTimer = null;
+
+function renderTagProgress(p) {
+  const statusEl = document.getElementById('tag_status');
+  if (p.total === 0) {
+    statusEl.textContent = 'Nothing to tag -- every bar already has tags.';
+    return;
+  }
+  const parts = [`${p.done} / ${p.total} done`];
+  if (p.errors) parts.push(`${p.errors} errors`);
+  statusEl.textContent = parts.join(', ') + (p.running ? '…' : ' — done.');
+}
+
+async function pollTagProgress() {
+  const res = await fetch('/api/tag-bars/progress');
+  const p = await res.json();
+  renderTagProgress(p);
+  if (!p.running) clearInterval(tagPollTimer);
+}
+
+async function tagBars() {
+  const statusEl = document.getElementById('tag_status');
+  statusEl.textContent = 'Starting…';
+  const res = await fetch('/api/tag-bars', { method: 'POST' });
+  const data = await res.json();
+  if (!res.ok) {
+    statusEl.textContent = `Error: ${data.error}`;
+    return;
+  }
+  renderTagProgress({total: data.total, done: 0, errors: 0, running: data.total > 0});
+  if (data.total > 0) {
+    if (tagPollTimer) clearInterval(tagPollTimer);
+    tagPollTimer = setInterval(pollTagProgress, 1000);
+  }
+}
+
+let instagramPollTimer = null;
+
+function renderInstagramProgress(p) {
+  const statusEl = document.getElementById('instagram_status');
+  if (p.total === 0) {
+    statusEl.textContent = 'Nothing to do -- every bar with a website already has an Instagram link or has been checked.';
+    return;
+  }
+  const parts = [`${p.done} / ${p.total} done`, `${p.found_direct} found directly`, `${p.found_parallel} found via Parallel`];
+  if (p.errors) parts.push(`${p.errors} errors`);
+  statusEl.textContent = parts.join(', ') + (p.running ? '…' : ' — done.');
+}
+
+async function pollInstagramProgress() {
+  const res = await fetch('/api/find-instagram/progress');
+  const p = await res.json();
+  renderInstagramProgress(p);
+  if (!p.running) clearInterval(instagramPollTimer);
+}
+
+async function findInstagram() {
+  const statusEl = document.getElementById('instagram_status');
+  statusEl.textContent = 'Starting…';
+  const res = await fetch('/api/find-instagram', { method: 'POST' });
+  const data = await res.json();
+  if (!res.ok) {
+    statusEl.textContent = `Error: ${data.error}`;
+    return;
+  }
+  renderInstagramProgress({total: data.total, done: 0, found_direct: 0, found_parallel: 0, errors: 0, running: data.total > 0});
+  if (data.total > 0) {
+    if (instagramPollTimer) clearInterval(instagramPollTimer);
+    instagramPollTimer = setInterval(pollInstagramProgress, 1000);
+  }
+}
+
+async function indexBars() {
+  const statusEl = document.getElementById('index_status');
+  statusEl.textContent = 'Building vector + BM25 indexes… this can take a minute.';
+  try {
+    const res = await fetch('/api/rag-index', { method: 'POST' });
+    const data = await res.json();
+    statusEl.textContent = res.ok
+      ? `Indexed ${data.indexed} bars.`
+      : `Error: ${data.error}`;
+  } catch (networkErr) {
+    statusEl.textContent = `Could not reach the server: ${networkErr.message}.`;
+  }
+}
+
+async function ragSearch() {
+  const query = document.getElementById('rag_query').value.trim();
+  const neighborhood = document.getElementById('rag_neighborhood').value;
+  const topN = document.getElementById('rag_top_n').value || 5;
+  const statusEl = document.getElementById('rag_status');
+  const resultEl = document.getElementById('rag_result');
+  if (!query) { statusEl.textContent = 'Enter a search query first.'; return; }
+  statusEl.textContent = 'Searching…';
+  resultEl.style.display = 'none';
+  try {
+    const res = await fetch('/api/rag-search', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query, neighborhood, top_n: parseInt(topN, 10)})
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      statusEl.textContent = `Error: ${data.error}`;
+      return;
+    }
+    statusEl.textContent = '';
+    resultEl.style.display = 'block';
+    const scopeBits = [];
+    if (data.neighborhood && data.neighborhood !== 'All Venice') scopeBits.push(`in ${data.neighborhood}`);
+    if (data.geo_filter_applied) scopeBits.push(`within 1 km of ${data.location_detected}`);
+    else if (data.location_detected) scopeBits.push(`(mentioned "${data.location_detected}" but couldn't locate it)`);
+    const scopeText = scopeBits.length ? ' ' + scopeBits.join(', ') : '';
+    document.getElementById('rag_meta').textContent =
+      `Analyzed ${data.analyzed} bar${data.analyzed === 1 ? '' : 's'}${scopeText} — showing top ${data.sources.length} of ${topN} requested.`;
+    document.getElementById('rag_answer').textContent = data.answer;
+    document.getElementById('rag_sources').innerHTML = data.sources.map(s => {
+      const mapUrl = `https://www.google.com/maps/place/?q=place_id:${encodeURIComponent(s.place_id)}`;
+      const links = `<a href="${escapeAttr(mapUrl)}" target="_blank" rel="noopener">map</a>`
+        + (s.website ? `. <a href="${escapeAttr(s.website)}" target="_blank" rel="noopener">site</a>` : '');
+      return `
+      <div class="source-item${s.confirmed ? '' : ' unconfirmed'}">
+        <div><span class="n">${escapeHtml(s.name)}</span> <span class="meta">— ${escapeHtml(s.neighborhood)} (rating ${s.rating ?? '–'}${s.price ? ', ' + escapeHtml(s.price) : ''})</span>${s.confirmed ? '' : '<span class="badge">Not confirmed in data</span>'}</div>
+        <div class="address">${escapeHtml(s.address)}</div>
+        <div class="links">${links}</div>
+        ${s.explanation ? `<div class="explanation">${escapeHtml(s.explanation)}</div>` : ''}
+      </div>
+    `;
+    }).join('');
+  } catch (networkErr) {
+    statusEl.textContent = `Could not reach the server: ${networkErr.message}.`;
+  }
+}
+
+document.getElementById('neighborhood').addEventListener('change', loadSummary);
+checkKey();
+checkParallelKey();
+checkOpenaiKey();
+loadSummary();
+</script>
+</body>
+</html>
