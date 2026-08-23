@@ -4,18 +4,18 @@ import time
 import re
 import math
 import pickle
-import sqlite3
 import csv
 import io
 import threading
 from datetime import datetime, timezone
 
 import requests
-import chromadb
 from dotenv import load_dotenv
 from openai import OpenAI
 from rank_bm25 import BM25Okapi
 from flask import Flask, request, jsonify, render_template, g, Response
+
+from storage.config import get_repository, get_index_store
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(APP_DIR, ".env"))
@@ -26,9 +26,11 @@ GOOGLE_PLACES_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY")
 PARALLEL_API_KEY = os.environ.get("PARALLEL_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
-DB_PATH = os.path.join(APP_DIR, "venice_bars.db")
-CHROMA_PATH = os.path.join(APP_DIR, "chroma_db")
 BM25_PATH = os.path.join(APP_DIR, "bm25_index.pkl")
+
+# DATA_BACKEND=sqlite (default) or postgres -- see storage/config.py.
+repository = get_repository(APP_DIR)
+index_store = get_index_store(APP_DIR)
 
 app = Flask(__name__)
 
@@ -316,7 +318,6 @@ def classify_bar(document, openai_client):
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 CHAT_MODEL = "gpt-4o-mini"
-BARS_COLLECTION_NAME = "bars"
 # Reciprocal-rank-fusion constant used to merge the vector and BM25 rankings
 # -- avoids having to normalize two incomparable score scales (cosine
 # distance vs. BM25 score) against each other.
@@ -353,8 +354,6 @@ RAG_SYSTEM_PROMPT = (
     "Do not use markdown formatting (no asterisks, no bold, no headers) "
     "anywhere."
 )
-
-chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
 
 _bm25_lock = threading.Lock()
 _bm25_state = {"index": None, "place_ids": []}
@@ -413,42 +412,26 @@ def build_bar_document(row):
 
 
 def build_indexes(openai_client):
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM bars").fetchall()
-    conn.close()
+    rows = repository.list_bars()
 
-    docs, ids, metadatas = [], [], []
+    docs, ids = [], []
     for row in rows:
         doc = build_bar_document(row)
         if not doc:
             continue
         docs.append(doc)
         ids.append(row["place_id"])
-        metadatas.append({
-            "name": row["name"] or "",
-            "address": row["address"] or "",
-            "rating": row["rating"] if row["rating"] is not None else 0.0,
-            "neighborhood": row["neighborhood"] or "",
-            "website": row["website"] or "",
-        })
 
-    # Full rebuild: drop and recreate so removed/changed bars don't leave
-    # stale entries behind.
-    try:
-        chroma_client.delete_collection(BARS_COLLECTION_NAME)
-    except Exception:
-        pass
-    collection = chroma_client.get_or_create_collection(BARS_COLLECTION_NAME)
-
+    # Full rebuild: replace the whole index so removed/changed bars don't
+    # leave stale entries behind.
+    embeddings = []
     if docs:
-        embeddings = []
         batch_size = 100
         for i in range(0, len(docs), batch_size):
             batch = docs[i:i + batch_size]
             resp = openai_client.embeddings.create(model=EMBEDDING_MODEL, input=batch)
             embeddings.extend([item.embedding for item in resp.data])
-        collection.add(ids=ids, embeddings=embeddings, documents=docs, metadatas=metadatas)
+    index_store.rebuild(ids, embeddings)
 
     global _bm25_state
     bm25 = BM25Okapi([tokenize(d) for d in docs]) if docs else None
@@ -521,15 +504,7 @@ def resolve_eligible_ids(neighborhood, geo_center, tags=None):
     if not scoped_neighborhood and not geo_center and not tags:
         return None
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    query = "SELECT place_id, latitude, longitude, tags FROM bars"
-    params = []
-    if scoped_neighborhood:
-        query += " WHERE neighborhood = ?"
-        params.append(scoped_neighborhood)
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
+    rows = repository.list_bars(neighborhood=scoped_neighborhood)
 
     if geo_center:
         lat0, lng0 = geo_center
@@ -552,8 +527,7 @@ def resolve_eligible_ids(neighborhood, geo_center, tags=None):
 
 
 def hybrid_search(query, top_n, openai_client, eligible_ids=None):
-    collection = chroma_client.get_or_create_collection(BARS_COLLECTION_NAME)
-    corpus_size = collection.count()
+    corpus_size = index_store.count()
     if corpus_size == 0:
         return [], 0
 
@@ -581,11 +555,9 @@ def hybrid_search(query, top_n, openai_client, eligible_ids=None):
     q_embedding = openai_client.embeddings.create(
         model=EMBEDDING_MODEL, input=[query]
     ).data[0].embedding
-    vector_results = collection.query(
-        query_embeddings=[q_embedding], n_results=corpus_size,
-        ids=eligible_ids if scoped else None,
+    vector_ids = index_store.query(
+        q_embedding, n_results=corpus_size, ids=eligible_ids if scoped else None,
     )
-    vector_ids = vector_results.get("ids", [[]])[0]
     analyzed_count = len(vector_ids) if scoped else corpus_size
 
     bm25_ids = []
@@ -643,13 +615,7 @@ def answer_query(query, top_n, api_key, neighborhood=None, google_api_key=None, 
             geo_info,
         )
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    placeholders = ",".join("?" * len(ranked_ids))
-    rows = conn.execute(
-        f"SELECT * FROM bars WHERE place_id IN ({placeholders})", ranked_ids
-    ).fetchall()
-    conn.close()
+    rows = repository.get_bars_by_ids(ranked_ids)
     rows_by_id = {row["place_id"]: row for row in rows}
     ordered_rows = [rows_by_id[pid] for pid in ranked_ids if pid in rows_by_id]
 
@@ -706,53 +672,6 @@ def answer_query(query, top_n, api_key, neighborhood=None, google_api_key=None, 
 
 
 # ---------- DB helpers ----------
-
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS bars (
-            place_id TEXT PRIMARY KEY,
-            name TEXT,
-            address TEXT,
-            rating REAL,
-            user_rating_count INTEGER,
-            website TEXT,
-            place_types TEXT,
-            primary_type TEXT,
-            latitude REAL,
-            longitude REAL,
-            neighborhood TEXT,
-            reviews TEXT,
-            found_via_query TEXT,
-            cicchetti_content TEXT,
-            price_level TEXT,
-            price_range_min REAL,
-            price_range_max REAL,
-            price_range_currency TEXT,
-            tags TEXT,
-            blurb TEXT,
-            instagram_url TEXT,
-            created_at TEXT,
-            updated_at TEXT
-        )
-    """)
-    # Migration for DBs created before the price/tags/blurb fields existed
-    # -- SQLite has no "ADD COLUMN IF NOT EXISTS", so check first.
-    cols = [row[1] for row in conn.execute("PRAGMA table_info(bars)").fetchall()]
-    for col, coltype in [
-        ("price_level", "TEXT"), ("price_range_min", "REAL"),
-        ("price_range_max", "REAL"), ("price_range_currency", "TEXT"),
-        ("tags", "TEXT"), ("blurb", "TEXT"), ("instagram_url", "TEXT"),
-    ]:
-        if col not in cols:
-            conn.execute(f"ALTER TABLE bars ADD COLUMN {col} {coltype}")
-    conn.commit()
-    conn.close()
-
-
-# Run once at import time so tables exist no matter how the app is started.
-init_db()
-
 
 def mask_key(key):
     if not key:
@@ -845,44 +764,17 @@ def upsert_bar(place, neighborhood, query):
             "publish_time": r.get("publishTime"),
         })
 
-    now = datetime.now(timezone.utc).isoformat()
-    conn = sqlite3.connect(DB_PATH)
-    existing = conn.execute(
-        "SELECT created_at FROM bars WHERE place_id=?", (place_id,)
-    ).fetchone()
-    created_at = existing[0] if existing else now
-    conn.execute("""
-        INSERT INTO bars (place_id, name, address, rating, user_rating_count, website,
-                           place_types, primary_type, latitude, longitude, neighborhood,
-                           reviews, found_via_query, price_level, price_range_min,
-                           price_range_max, price_range_currency, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(place_id) DO UPDATE SET
-            name=excluded.name,
-            address=excluded.address,
-            rating=excluded.rating,
-            user_rating_count=excluded.user_rating_count,
-            website=excluded.website,
-            place_types=excluded.place_types,
-            primary_type=excluded.primary_type,
-            latitude=excluded.latitude,
-            longitude=excluded.longitude,
-            neighborhood=excluded.neighborhood,
-            reviews=excluded.reviews,
-            found_via_query=excluded.found_via_query,
-            price_level=excluded.price_level,
-            price_range_min=excluded.price_range_min,
-            price_range_max=excluded.price_range_max,
-            price_range_currency=excluded.price_range_currency,
-            updated_at=excluded.updated_at
-    """, (
-        place_id, name, address, rating, user_rating_count, website,
-        json.dumps(types, ensure_ascii=False), primary_type, lat, lng, neighborhood,
-        json.dumps(reviews, ensure_ascii=False), query, price_level, price_range_min,
-        price_range_max, price_range_currency, created_at, now,
-    ))
-    conn.commit()
-    conn.close()
+    # Deliberately omits cicchetti_content/tags/blurb/instagram_url -- those
+    # are filled in by later admin steps and must survive a re-collect.
+    repository.upsert_bar({
+        "place_id": place_id, "name": name, "address": address, "rating": rating,
+        "user_rating_count": user_rating_count, "website": website,
+        "place_types": json.dumps(types, ensure_ascii=False), "primary_type": primary_type,
+        "latitude": lat, "longitude": lng, "neighborhood": neighborhood,
+        "reviews": json.dumps(reviews, ensure_ascii=False), "found_via_query": query,
+        "price_level": price_level, "price_range_min": price_range_min,
+        "price_range_max": price_range_max, "price_range_currency": price_range_currency,
+    })
     return True
 
 
@@ -939,38 +831,15 @@ _extract_progress = {
 
 
 def _bars_needing_content(neighborhood):
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    where = "website IS NOT NULL AND website != ''"
-    params = ()
-    if neighborhood and neighborhood != "All Venice":
-        where += " AND neighborhood = ?"
-        params = (neighborhood,)
-    rows = conn.execute(
-        f"SELECT place_id, website FROM bars WHERE {where} "
-        f"AND (cicchetti_content IS NULL OR cicchetti_content = '')",
-        params,
-    ).fetchall()
-    skipped = conn.execute(
-        f"SELECT COUNT(*) FROM bars WHERE {where} "
-        f"AND cicchetti_content IS NOT NULL AND cicchetti_content != ''",
-        params,
-    ).fetchone()[0]
-    conn.close()
-    return rows, skipped
+    scoped = neighborhood if neighborhood and neighborhood != "All Venice" else None
+    return repository.bars_missing_content(neighborhood=scoped)
 
 
 def _run_extraction_job(api_key, rows):
     for row in rows:
         try:
             content = extract_cicchetti_content(row["website"], api_key)
-            conn = sqlite3.connect(DB_PATH)
-            conn.execute(
-                "UPDATE bars SET cicchetti_content=?, updated_at=? WHERE place_id=?",
-                (content, datetime.now(timezone.utc).isoformat(), row["place_id"]),
-            )
-            conn.commit()
-            conn.close()
+            repository.update_bar_fields(row["place_id"], {"cicchetti_content": content})
         except Exception as e:
             with _extract_lock:
                 _extract_progress["errors"] += 1
@@ -989,16 +858,10 @@ _tag_progress = {"running": False, "total": 0, "done": 0, "errors": 0}
 
 
 def _bars_needing_tags():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
     # blurb IS NULL also catches bars tagged before the blurb/Instagram
     # fields existed, so re-running this after that change backfills them
     # instead of skipping bars that already have tags.
-    rows = conn.execute(
-        "SELECT * FROM bars WHERE tags IS NULL OR tags = '' OR blurb IS NULL"
-    ).fetchall()
-    conn.close()
-    return rows
+    return repository.bars_missing_tags()
 
 
 def _run_tagging_job(api_key, rows):
@@ -1008,16 +871,9 @@ def _run_tagging_job(api_key, rows):
             doc = build_bar_document(row)
             tags, blurb = classify_bar(doc, client)
             instagram_url = extract_instagram(doc)
-            conn = sqlite3.connect(DB_PATH)
-            conn.execute(
-                "UPDATE bars SET tags=?, blurb=?, instagram_url=?, updated_at=? WHERE place_id=?",
-                (
-                    json.dumps(tags), blurb, instagram_url,
-                    datetime.now(timezone.utc).isoformat(), row["place_id"],
-                ),
-            )
-            conn.commit()
-            conn.close()
+            repository.update_bar_fields(row["place_id"], {
+                "tags": json.dumps(tags), "blurb": blurb, "instagram_url": instagram_url,
+            })
         except Exception:
             with _tag_lock:
                 _tag_progress["errors"] += 1
@@ -1038,14 +894,7 @@ _social_progress = {
 
 
 def _bars_needing_instagram():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT * FROM bars WHERE website IS NOT NULL AND website != '' "
-        "AND (instagram_url IS NULL OR instagram_url = '')"
-    ).fetchall()
-    conn.close()
-    return rows
+    return repository.bars_missing_instagram()
 
 
 def _run_instagram_job(parallel_api_key, rows):
@@ -1057,13 +906,7 @@ def _run_instagram_job(parallel_api_key, rows):
                 found = scrape_instagram_via_parallel(row["website"], parallel_api_key)
                 source = "parallel"
             if found:
-                conn = sqlite3.connect(DB_PATH)
-                conn.execute(
-                    "UPDATE bars SET instagram_url=?, updated_at=? WHERE place_id=?",
-                    (found, datetime.now(timezone.utc).isoformat(), row["place_id"]),
-                )
-                conn.commit()
-                conn.close()
+                repository.update_bar_fields(row["place_id"], {"instagram_url": found})
                 with _social_lock:
                     _social_progress["found_direct" if source == "direct" else "found_parallel"] += 1
         except Exception:
@@ -1077,17 +920,10 @@ def _run_instagram_job(parallel_api_key, rows):
 
 
 def browse_bars(neighborhood, tags):
-    """Plain SQL filter + sort, no LLM -- for checkbox-only browsing with
-    no free-text question."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    query = "SELECT * FROM bars"
-    params = []
-    if neighborhood and neighborhood != "All Venice":
-        query += " WHERE neighborhood = ?"
-        params.append(neighborhood)
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
+    """Plain filter + sort, no LLM -- for checkbox-only browsing with no
+    free-text question."""
+    scoped = neighborhood if neighborhood and neighborhood != "All Venice" else None
+    rows = repository.list_bars(neighborhood=scoped)
 
     if tags:
         # ALL selected tags must match -- see resolve_eligible_ids.
@@ -1113,16 +949,9 @@ def browse_bars(neighborhood, tags):
 # ---------- Query helpers ----------
 
 def bars_query(neighborhood):
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    if neighborhood and neighborhood != "All Venice":
-        rows = conn.execute(
-            "SELECT * FROM bars WHERE neighborhood=? ORDER BY name", (neighborhood,)
-        ).fetchall()
-    else:
-        rows = conn.execute("SELECT * FROM bars ORDER BY neighborhood, name").fetchall()
-    conn.close()
-    return rows
+    scoped = neighborhood if neighborhood and neighborhood != "All Venice" else None
+    rows = repository.list_bars(neighborhood=scoped)
+    return sorted(rows, key=lambda r: (r["neighborhood"] or "", r["name"] or ""))
 
 
 # ---------- Routes ----------

@@ -5,3 +5,5 @@ chromadb>=0.5
 rank_bm25>=0.2
 gunicorn>=22.0
 python-dotenv>=1.0
+psycopg2-binary>=2.9
+pgvector>=0.3
