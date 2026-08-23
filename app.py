@@ -6,6 +6,7 @@ import math
 import pickle
 import csv
 import io
+import hmac
 import threading
 from datetime import datetime, timezone
 
@@ -33,6 +34,48 @@ repository = get_repository(APP_DIR)
 index_store = get_index_store(APP_DIR)
 
 app = Flask(__name__)
+
+# ---------- Admin access control ----------
+# On the VPS, nginx put a password wall in front of the admin panel. Render
+# has no nginx, so the same protection is enforced here in the app: every
+# route except the few the public /discover page needs requires HTTP Basic
+# Auth against ADMIN_USERNAME / ADMIN_PASSWORD (set as environment variables).
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
+
+# Exact paths the public site calls -- everything else is treated as admin.
+PUBLIC_PATHS = {"/discover", "/api/tags", "/api/browse"}
+
+
+def _admin_credentials_ok(auth):
+    if not auth:
+        return False
+    # Constant-time compares so a wrong guess can't be narrowed down by
+    # timing how long the check takes.
+    user_ok = hmac.compare_digest(auth.username or "", ADMIN_USERNAME)
+    pass_ok = hmac.compare_digest(auth.password or "", ADMIN_PASSWORD)
+    return user_ok and pass_ok
+
+
+@app.before_request
+def require_admin_auth():
+    path = request.path
+    if path in PUBLIC_PATHS or path.startswith("/static/"):
+        return None
+    # Fail closed: with no admin password configured, the admin panel is
+    # locked entirely rather than left open to the internet.
+    if not ADMIN_PASSWORD:
+        return Response(
+            "Admin panel is disabled: ADMIN_PASSWORD is not set on the server.",
+            503,
+        )
+    if not _admin_credentials_ok(request.authorization):
+        return Response(
+            "Authentication required.", 401,
+            {"WWW-Authenticate": 'Basic realm="Venice Cicchetti admin"'},
+        )
+    return None
+
 
 # --- Sestiere viewport boxes (approximate -- Venice is a small, irregular
 # archipelago, so rectangular boxes overlap more than they did for Verona's
