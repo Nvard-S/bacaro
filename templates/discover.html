@@ -371,6 +371,9 @@ document.getElementById('neighborhood').addEventListener('change', runSearch);
 document.getElementById('query').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') runSearch();
 });
+document.getElementById('query').addEventListener('focus', (e) => {
+  e.target.placeholder = '';
+});
 
 document.getElementById('loaderRow').innerHTML = Array(5).fill(`<span class="loader-bite">${ICON_CROSTINO}</span>`).join('');
 

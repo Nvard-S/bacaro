@@ -42,19 +42,9 @@
 
 <section>
   <h2>1. API keys</h2>
-  <label for="api_key">Google Places API (New) key</label>
-  <input id="api_key" type="password" placeholder="Paste your Places API (New) key">
-  <button onclick="saveKey()">Save key</button>
+  <p class="note">Keys are set via environment variables (see .env.example), not through this UI. Status below just confirms whether each is currently loaded.</p>
   <div class="status" id="key_status"></div>
-
-  <label for="parallel_api_key" style="margin-top:14px;">Parallel API key</label>
-  <input id="parallel_api_key" type="password" placeholder="Paste your Parallel API key">
-  <button onclick="saveParallelKey()">Save key</button>
   <div class="status" id="parallel_key_status"></div>
-
-  <label for="openai_api_key" style="margin-top:14px;">OpenAI API key</label>
-  <input id="openai_api_key" type="password" placeholder="Paste your OpenAI API key">
-  <button onclick="saveOpenaiKey()">Save key</button>
   <div class="status" id="openai_key_status"></div>
 </section>
 
@@ -142,33 +132,11 @@
 </section>
 
 <script>
-async function saveKey() {
-  const key = document.getElementById('api_key').value.trim();
-  const statusEl = document.getElementById('key_status');
-  if (!key) { statusEl.textContent = 'Enter a key first.'; return; }
-  statusEl.textContent = 'Saving…';
-  try {
-    const res = await fetch('/api/settings', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({api_key: key})
-    });
-    let data;
-    try {
-      data = await res.json();
-    } catch (parseErr) {
-      statusEl.textContent = `Server returned an unexpected response (HTTP ${res.status}). Check the terminal running app.py for an error.`;
-      return;
-    }
-    statusEl.textContent = res.ok ? `Saved (${data.masked_key})` : `Error: ${data.error}`;
-  } catch (networkErr) {
-    statusEl.textContent = `Could not reach the server: ${networkErr.message}. Is app.py still running?`;
-  }
-}
-
 async function checkKey() {
   const res = await fetch('/api/settings');
   const data = await res.json();
-  document.getElementById('key_status').textContent = data.has_key ? `Key on file (${data.masked_key})` : 'No key saved yet.';
+  document.getElementById('key_status').textContent = data.has_key
+    ? `Google Places: loaded (${data.masked_key})` : 'Google Places: not set in environment.';
 }
 
 async function runCollection() {
@@ -213,27 +181,11 @@ function exportCsv() {
   window.location = `/api/export?neighborhood=${encodeURIComponent(neighborhood)}`;
 }
 
-async function saveParallelKey() {
-  const key = document.getElementById('parallel_api_key').value.trim();
-  const statusEl = document.getElementById('parallel_key_status');
-  if (!key) { statusEl.textContent = 'Enter a key first.'; return; }
-  statusEl.textContent = 'Saving…';
-  try {
-    const res = await fetch('/api/settings/parallel', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({api_key: key})
-    });
-    const data = await res.json();
-    statusEl.textContent = res.ok ? `Saved (${data.masked_key})` : `Error: ${data.error}`;
-  } catch (networkErr) {
-    statusEl.textContent = `Could not reach the server: ${networkErr.message}. Is app.py still running?`;
-  }
-}
-
 async function checkParallelKey() {
   const res = await fetch('/api/settings/parallel');
   const data = await res.json();
-  document.getElementById('parallel_key_status').textContent = data.has_key ? `Key on file (${data.masked_key})` : 'No key saved yet.';
+  document.getElementById('parallel_key_status').textContent = data.has_key
+    ? `Parallel: loaded (${data.masked_key})` : 'Parallel: not set in environment.';
 }
 
 let extractPollTimer = null;
@@ -287,27 +239,11 @@ function escapeAttr(str) {
   return escapeHtml(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-async function saveOpenaiKey() {
-  const key = document.getElementById('openai_api_key').value.trim();
-  const statusEl = document.getElementById('openai_key_status');
-  if (!key) { statusEl.textContent = 'Enter a key first.'; return; }
-  statusEl.textContent = 'Saving…';
-  try {
-    const res = await fetch('/api/settings/openai', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({api_key: key})
-    });
-    const data = await res.json();
-    statusEl.textContent = res.ok ? `Saved (${data.masked_key})` : `Error: ${data.error}`;
-  } catch (networkErr) {
-    statusEl.textContent = `Could not reach the server: ${networkErr.message}. Is app.py still running?`;
-  }
-}
-
 async function checkOpenaiKey() {
   const res = await fetch('/api/settings/openai');
   const data = await res.json();
-  document.getElementById('openai_key_status').textContent = data.has_key ? `Key on file (${data.masked_key})` : 'No key saved yet.';
+  document.getElementById('openai_key_status').textContent = data.has_key
+    ? `OpenAI: loaded (${data.masked_key})` : 'OpenAI: not set in environment.';
 }
 
 let tagPollTimer = null;

@@ -12,11 +12,20 @@ from datetime import datetime, timezone
 
 import requests
 import chromadb
+from dotenv import load_dotenv
 from openai import OpenAI
 from rank_bm25 import BM25Okapi
 from flask import Flask, request, jsonify, render_template, g, Response
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(APP_DIR, ".env"))
+
+# All secrets come from the environment (see .env.example) -- never stored
+# in the database or committed to source control.
+GOOGLE_PLACES_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY")
+PARALLEL_API_KEY = os.environ.get("PARALLEL_API_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+
 DB_PATH = os.path.join(APP_DIR, "venice_bars.db")
 CHROMA_PATH = os.path.join(APP_DIR, "chroma_db")
 BM25_PATH = os.path.join(APP_DIR, "bm25_index.pkl")
@@ -224,6 +233,64 @@ def scrape_instagram_via_parallel(website_url, parallel_api_key):
     return extract_instagram(full_content) or extract_instagram(excerpt_text)
 
 
+# Safety net for tags with strong, unambiguous lexical signals -- the LLM
+# classification call is occasionally internally inconsistent (e.g. writes
+# a blurb that says "natural wines" but omits the natural_wine tag from
+# the same response), so keyword presence in the bar's own data is used to
+# catch what the model missed. Deliberately limited to tags where a keyword
+# hit is a reliable, low-false-positive signal; left out entirely for tags
+# like canal_side or local_favorite where a matching word (e.g. an address
+# containing "Fondamenta") doesn't actually confirm the concept.
+KEYWORD_TAG_TRIGGERS = {
+    "natural_wine": [
+        "natural wine", "natural wines", "vino naturale", "vini naturali",
+        "orange wine", "biodynamic", "vino bio", "vini bio", "organic wine",
+    ],
+    "dietary_friendly": [
+        "vegan", "vegano", "vegani", "vegetarian", "vegetariano",
+        "gluten free", "gluten-free", "senza glutine",
+    ],
+    "canal_side": [
+        "canal view", "canal views", "vista sul canale", "overlooking the canal",
+    ],
+}
+# The generic address word "Fondamenta" appears on nearly every Venice
+# street regardless of whether a bar actually has water-side seating, so
+# it's deliberately excluded -- canal_side only trusts phrases that
+# describe an actual view/vantage, not just an address containing the word.
+
+_HOURS_RANGE_RE = re.compile(
+    r"(\d{1,2}):(\d{2})\s*(AM|PM)?\s*[-–—]\s*(\d{1,2}):(\d{2})\s*(AM|PM)?",
+    re.IGNORECASE,
+)
+
+
+def mentions_late_hours(text):
+    """True if a closing time in the text is at/after 11pm or in the early
+    morning (past midnight) -- parsed from actual posted hours rather than
+    guessed from vague phrases like "late night", which are too easy to
+    mismatch (e.g. a review title, not the bar's own hours)."""
+    if not text:
+        return False
+    for m in _HOURS_RANGE_RE.finditer(text):
+        close_h, ampm = int(m.group(4)), m.group(6)
+        if ampm:
+            hour24 = (close_h % 12) + (12 if ampm.upper() == "PM" else 0)
+        else:
+            hour24 = close_h
+        if hour24 >= 23 or hour24 <= 5:
+            return True
+    return False
+
+
+def keyword_backup_tags(document):
+    text = (document or "").lower()
+    tags = {tag for tag, phrases in KEYWORD_TAG_TRIGGERS.items() if any(p in text for p in phrases)}
+    if mentions_late_hours(document or ""):
+        tags.add("open_late")
+    return tags
+
+
 def classify_bar(document, openai_client):
     if not document:
         return [], ""
@@ -238,10 +305,11 @@ def classify_bar(document, openai_client):
     try:
         parsed = json.loads(resp.choices[0].message.content)
     except (json.JSONDecodeError, TypeError):
-        return [], ""
-    tags = [t for t in (parsed.get("tags") or []) if t in TAG_TAXONOMY]
+        parsed = {}
+    tags = {t for t in (parsed.get("tags") or []) if t in TAG_TAXONOMY}
+    tags |= keyword_backup_tags(document)
     blurb = parsed.get("blurb") or ""
-    return tags, blurb
+    return sorted(tags), blurb
 
 
 # ---------- RAG search (OpenAI + ChromaDB + BM25) ----------
@@ -642,12 +710,6 @@ def answer_query(query, top_n, api_key, neighborhood=None, google_api_key=None, 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    """)
-    conn.execute("""
         CREATE TABLE IF NOT EXISTS bars (
             place_id TEXT PRIMARY KEY,
             name TEXT,
@@ -690,28 +752,6 @@ def init_db():
 
 # Run once at import time so tables exist no matter how the app is started.
 init_db()
-
-
-def get_setting(key):
-    conn = sqlite3.connect(DB_PATH)
-    row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-    conn.close()
-    return row[0] if row else None
-
-
-def save_setting(key, value):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "INSERT INTO settings (key, value) VALUES (?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        (key, value),
-    )
-    conn.commit()
-    conn.close()
-
-
-def get_api_key():
-    return get_setting("google_places_api_key")
 
 
 def mask_key(key):
@@ -1099,55 +1139,22 @@ def discover():
 
 @app.route("/api/settings", methods=["GET"])
 def get_settings():
-    key = get_api_key()
-    return jsonify({"has_key": bool(key), "masked_key": mask_key(key)})
-
-
-@app.route("/api/settings", methods=["POST"])
-def save_settings():
-    data = request.get_json(force=True)
-    api_key = (data.get("api_key") or "").strip()
-    if not api_key:
-        return jsonify({"error": "api_key is required"}), 400
-    save_setting("google_places_api_key", api_key)
-    return jsonify({"ok": True, "masked_key": mask_key(api_key)})
+    return jsonify({"has_key": bool(GOOGLE_PLACES_API_KEY), "masked_key": mask_key(GOOGLE_PLACES_API_KEY)})
 
 
 @app.route("/api/settings/parallel", methods=["GET"])
 def get_parallel_settings():
-    key = get_setting("parallel_api_key")
-    return jsonify({"has_key": bool(key), "masked_key": mask_key(key)})
-
-
-@app.route("/api/settings/parallel", methods=["POST"])
-def save_parallel_settings():
-    data = request.get_json(force=True)
-    api_key = (data.get("api_key") or "").strip()
-    if not api_key:
-        return jsonify({"error": "api_key is required"}), 400
-    save_setting("parallel_api_key", api_key)
-    return jsonify({"ok": True, "masked_key": mask_key(api_key)})
+    return jsonify({"has_key": bool(PARALLEL_API_KEY), "masked_key": mask_key(PARALLEL_API_KEY)})
 
 
 @app.route("/api/settings/openai", methods=["GET"])
 def get_openai_settings():
-    key = get_setting("openai_api_key")
-    return jsonify({"has_key": bool(key), "masked_key": mask_key(key)})
-
-
-@app.route("/api/settings/openai", methods=["POST"])
-def save_openai_settings():
-    data = request.get_json(force=True)
-    api_key = (data.get("api_key") or "").strip()
-    if not api_key:
-        return jsonify({"error": "api_key is required"}), 400
-    save_setting("openai_api_key", api_key)
-    return jsonify({"ok": True, "masked_key": mask_key(api_key)})
+    return jsonify({"has_key": bool(OPENAI_API_KEY), "masked_key": mask_key(OPENAI_API_KEY)})
 
 
 @app.route("/api/rag-index", methods=["POST"])
 def rag_index():
-    api_key = get_setting("openai_api_key")
+    api_key = OPENAI_API_KEY
     if not api_key:
         return jsonify({"error": "Save an OpenAI API key first."}), 400
     try:
@@ -1159,7 +1166,7 @@ def rag_index():
 
 @app.route("/api/rag-search", methods=["POST"])
 def rag_search():
-    api_key = get_setting("openai_api_key")
+    api_key = OPENAI_API_KEY
     if not api_key:
         return jsonify({"error": "Save an OpenAI API key first."}), 400
 
@@ -1181,7 +1188,7 @@ def rag_search():
 
     try:
         answer, sources, analyzed, geo_info = answer_query(
-            query, top_n, api_key, neighborhood, get_api_key()
+            query, top_n, api_key, neighborhood, GOOGLE_PLACES_API_KEY
         )
         return jsonify({
             "ok": True, "answer": answer, "sources": sources,
@@ -1194,7 +1201,7 @@ def rag_search():
 
 @app.route("/api/collect", methods=["POST"])
 def collect():
-    api_key = get_api_key()
+    api_key = GOOGLE_PLACES_API_KEY
     if not api_key:
         return jsonify({"error": "Save a Google Places API key first."}), 400
     data = request.get_json(force=True)
@@ -1219,7 +1226,7 @@ def collect():
 
 @app.route("/api/fetch-cicchetti-content", methods=["POST"])
 def fetch_cicchetti_content():
-    api_key = get_setting("parallel_api_key")
+    api_key = PARALLEL_API_KEY
     if not api_key:
         return jsonify({"error": "Save a Parallel API key first."}), 400
 
@@ -1264,7 +1271,7 @@ def get_tags():
 
 @app.route("/api/tag-bars", methods=["POST"])
 def tag_bars():
-    api_key = get_setting("openai_api_key")
+    api_key = OPENAI_API_KEY
     if not api_key:
         return jsonify({"error": "Save an OpenAI API key first."}), 400
 
@@ -1303,7 +1310,7 @@ def find_instagram():
         })
 
     if rows:
-        parallel_api_key = get_setting("parallel_api_key")
+        parallel_api_key = PARALLEL_API_KEY
         thread = threading.Thread(
             target=_run_instagram_job, args=(parallel_api_key, rows), daemon=True
         )
@@ -1332,7 +1339,7 @@ def browse():
             "neighborhood": neighborhood,
         })
 
-    api_key = get_setting("openai_api_key")
+    api_key = OPENAI_API_KEY
     if not api_key:
         return jsonify({"error": "The search index isn't set up yet. Try again later."}), 400
     with _bm25_lock:
@@ -1348,7 +1355,7 @@ def browse():
 
     try:
         answer, sources, analyzed, geo_info = answer_query(
-            query, top_n, api_key, neighborhood, get_api_key(), tags
+            query, top_n, api_key, neighborhood, GOOGLE_PLACES_API_KEY, tags
         )
         return jsonify({
             "ok": True, "mode": "search", "answer": answer, "sources": sources,

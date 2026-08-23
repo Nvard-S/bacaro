@@ -1,6 +1,12 @@
-# Local data & secrets -- never commit. venice_bars.db holds your real
-# Google Places / Parallel / OpenAI API keys in the settings table.
+# Secrets -- never commit. Real API keys live here, not in the database
+# (see .env.example for the variable names).
+.env
+
+# Local data -- never commit, just large/regenerable local state.
 venice_bars.db
+venice_bars.db-journal
+venice_bars.db-wal
+venice_bars.db-shm
 chroma_db/
 bm25_index.pkl
 
@@ -10,8 +16,19 @@ server.log
 
 # Python
 .venv/
+venv/
+env/
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*~
 
 # OS cruft
 .DS_Store
+Thumbs.db
