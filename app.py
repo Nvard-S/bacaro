@@ -6,7 +6,6 @@ import math
 import pickle
 import csv
 import io
-import hmac
 import threading
 from datetime import datetime, timezone
 
@@ -35,26 +34,44 @@ index_store = get_index_store(APP_DIR)
 
 app = Flask(__name__)
 
-# ---------- Admin access control ----------
-# On the VPS, nginx put a password wall in front of the admin panel. Render
-# has no nginx, so the same protection is enforced here in the app: every
-# route except the few the public /discover page needs requires HTTP Basic
-# Auth against ADMIN_USERNAME / ADMIN_PASSWORD (set as environment variables).
-ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
+# ---------- Admin access control (Supabase Auth) ----------
+# The admin panel is gated by Supabase Auth: the browser signs in against
+# Supabase and receives an access token; every admin API request carries that
+# token as "Authorization: Bearer <token>", and the backend asks Supabase to
+# validate it (GET /auth/v1/user). Only tokens whose verified email is in
+# ADMIN_EMAILS are allowed through. SUPABASE_ANON_KEY is the public key
+# (safe to expose to the browser) -- no JWT signing secret is handled here.
+SUPABASE_URL = (os.environ.get("SUPABASE_URL") or "").rstrip("/")
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
+ADMIN_EMAILS = {
+    e.strip().lower()
+    for e in (os.environ.get("ADMIN_EMAILS") or "").split(",")
+    if e.strip()
+}
+_ADMIN_AUTH_CONFIGURED = bool(SUPABASE_URL and SUPABASE_ANON_KEY and ADMIN_EMAILS)
 
-# Exact paths the public site calls -- everything else is treated as admin.
-PUBLIC_PATHS = {"/discover", "/api/tags", "/api/browse"}
+# Paths reachable without signing in: the public discover page and the two
+# endpoints it calls, the admin page shell itself (just HTML + the login form,
+# it holds no data), and the small config endpoint the login form reads.
+# Every other route requires a valid admin token.
+PUBLIC_PATHS = {"/", "/discover", "/api/tags", "/api/browse", "/api/auth-config"}
 
 
-def _admin_credentials_ok(auth):
-    if not auth:
-        return False
-    # Constant-time compares so a wrong guess can't be narrowed down by
-    # timing how long the check takes.
-    user_ok = hmac.compare_digest(auth.username or "", ADMIN_USERNAME)
-    pass_ok = hmac.compare_digest(auth.password or "", ADMIN_PASSWORD)
-    return user_ok and pass_ok
+def _verify_admin_token(token):
+    """Ask Supabase whether this access token is valid; return the user's
+    lowercased email if so, else None. Using Supabase's own /auth/v1/user
+    endpoint means we never hold or verify the JWT signing secret ourselves."""
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+    except requests.RequestException:
+        return None
+    if resp.status_code != 200:
+        return None
+    return (resp.json().get("email") or "").lower()
 
 
 @app.before_request
@@ -62,18 +79,18 @@ def require_admin_auth():
     path = request.path
     if path in PUBLIC_PATHS or path.startswith("/static/"):
         return None
-    # Fail closed: with no admin password configured, the admin panel is
-    # locked entirely rather than left open to the internet.
-    if not ADMIN_PASSWORD:
-        return Response(
-            "Admin panel is disabled: ADMIN_PASSWORD is not set on the server.",
-            503,
-        )
-    if not _admin_credentials_ok(request.authorization):
-        return Response(
-            "Authentication required.", 401,
-            {"WWW-Authenticate": 'Basic realm="Venice Cicchetti admin"'},
-        )
+    # Fail closed: if admin auth isn't fully configured, lock the panel.
+    if not _ADMIN_AUTH_CONFIGURED:
+        return jsonify({"error": "Admin auth is not configured on the server."}), 503
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return jsonify({"error": "Not authenticated"}), 401
+    email = _verify_admin_token(header[len("Bearer "):])
+    if not email:
+        return jsonify({"error": "Invalid or expired session"}), 401
+    if email not in ADMIN_EMAILS:
+        return jsonify({"error": "This account is not an admin"}), 403
+    g.admin_email = email
     return None
 
 
@@ -1007,6 +1024,17 @@ def index():
 @app.route("/discover")
 def discover():
     return render_template("discover.html")
+
+
+@app.route("/api/auth-config")
+def auth_config():
+    # Public, non-secret values the admin login form needs to talk to
+    # Supabase Auth directly from the browser.
+    return jsonify({
+        "supabase_url": SUPABASE_URL,
+        "anon_key": SUPABASE_ANON_KEY,
+        "configured": _ADMIN_AUTH_CONFIGURED,
+    })
 
 
 @app.route("/api/settings", methods=["GET"])
