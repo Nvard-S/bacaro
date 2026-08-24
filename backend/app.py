@@ -13,7 +13,8 @@ import requests
 from dotenv import load_dotenv
 from openai import OpenAI
 from rank_bm25 import BM25Okapi
-from flask import Flask, request, jsonify, render_template, g, Response
+from flask import Flask, request, jsonify, g, Response
+from flask_cors import CORS
 
 from storage.config import get_repository, get_index_store
 
@@ -34,6 +35,13 @@ index_store = get_index_store(APP_DIR)
 
 app = Flask(__name__)
 
+# This backend is now an API only -- the public site and admin panel are
+# separate frontends on their own domains, so the browser calls this API
+# cross-origin. CORS_ORIGINS lists the domains allowed to call it (comma-
+# separated); "*" is fine here because auth uses a Bearer token, not cookies.
+CORS_ORIGINS = [o.strip() for o in (os.environ.get("CORS_ORIGINS") or "*").split(",") if o.strip()]
+CORS(app, resources={r"/*": {"origins": CORS_ORIGINS}})
+
 # ---------- Admin access control (Supabase Auth) ----------
 # The admin panel is gated by Supabase Auth: the browser signs in against
 # Supabase and receives an access token; every admin API request carries that
@@ -50,18 +58,10 @@ ADMIN_EMAILS = {
 }
 _ADMIN_AUTH_CONFIGURED = bool(SUPABASE_URL and SUPABASE_ANON_KEY and ADMIN_EMAILS)
 
-# The admin panel is served at a hard-to-guess path (set ADMIN_PATH in the
-# environment, e.g. "manage-9f3a2c") so it isn't sitting at an obvious URL.
-# This is obscurity layered on top of the real protection (Supabase Auth on
-# every admin API call) -- not a substitute for it. Defaults to "admin" for
-# local development.
-ADMIN_PATH = (os.environ.get("ADMIN_PATH") or "admin").strip("/")
-
-# Paths reachable without signing in: the public site (served at root) and
-# the two endpoints it calls, the admin page shell itself (just HTML + the
-# login form) at its obscure path, and the config endpoint the login form
-# reads. Every other route requires a valid admin token.
-PUBLIC_PATHS = {"/", "/api/tags", "/api/browse", "/api/auth-config", f"/{ADMIN_PATH}"}
+# Endpoints reachable without signing in: the health root, the two the public
+# site calls, and the config the admin login form reads. Every other route
+# requires a valid admin token.
+PUBLIC_PATHS = {"/", "/api/tags", "/api/browse", "/api/auth-config"}
 
 
 def _verify_admin_token(token):
@@ -83,6 +83,9 @@ def _verify_admin_token(token):
 
 @app.before_request
 def require_admin_auth():
+    # CORS preflight requests carry no auth header and must pass through.
+    if request.method == "OPTIONS":
+        return None
     path = request.path
     if path in PUBLIC_PATHS or path.startswith("/static/"):
         return None
@@ -1022,18 +1025,13 @@ def bars_query(neighborhood):
 
 
 # ---------- Routes ----------
+# API only -- the public site and admin panel are separate frontend apps
+# now. The root is just a health check so hitting the backend directly
+# shows it's alive.
 
 @app.route("/")
-def public_site():
-    # The friend-facing site lives at the root now.
-    return render_template("discover.html")
-
-
-@app.route(f"/{ADMIN_PATH}")
-def admin_page():
-    # Admin panel at its obscure path; still gated by Supabase Auth on every
-    # data/action endpoint it calls.
-    return render_template("index.html")
+def health():
+    return jsonify({"service": "bacaro-hop-api", "ok": True})
 
 
 @app.route("/api/auth-config")
