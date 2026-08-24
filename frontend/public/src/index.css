@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+/* Light palette as design tokens. Tailwind v4 turns these into utilities
+   (bg-canvas, text-ink, border-line, ...) that compile to var(--color-*),
+   so overriding the vars below for dark mode re-themes everything at runtime. */
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  --color-canvas: #FAFAF8;
+  --color-card: #FFFFFF;
+  --color-ink: #16191A;
+  --color-muted: #6B7270;
+  --color-line: #E7E6E2;
+  --color-teal: #0E6E66;
+  --color-teal-strong: #0A544E;
+  --color-coral: #FF6B4A;
+  --color-coral-strong: #E85332;
+  --color-chip: #F1F1EE;
+  --color-good: #1F8F57;
+  --color-ok: #C98A16;
+}
+
+/* Dark theme: same tokens, different values. Applied via data-theme="dark"
+   on <html>; comes after @theme so it wins at equal specificity. */
+[data-theme="dark"] {
+  --color-canvas: #131514;
+  --color-card: #1C1F1E;
+  --color-ink: #F2F1ED;
+  --color-muted: #9BA19E;
+  --color-line: #2C302E;
+  --color-teal: #2FA79B;
+  --color-teal-strong: #248F84;
+  --color-coral: #FF7D5E;
+  --color-coral-strong: #FF6B4A;
+  --color-chip: #262A28;
+  --color-good: #46C07E;
+  --color-ok: #E0B252;
+}
+
+html { color-scheme: light dark; }
+body {
+  font-family: var(--font-sans);
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+/* Cards fade + rise in as results arrive. */
+@keyframes fade-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-rise { animation: fade-rise .35s ease both; }
+
+/* Skeleton shimmer for loading cards. */
+@keyframes shimmer { 100% { transform: translateX(100%); } }
+.skeleton { position: relative; overflow: hidden; background: var(--color-chip); }
+.skeleton::after {
+  content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent);
+  animation: shimmer 1.3s infinite;
+}
+[data-theme="dark"] .skeleton::after {
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent);
+}
+
+/* Crostino loader: five bites switch on left-to-right in one shared cycle. */
+.loader-bite { opacity: 0; }
+.loader-bite:nth-child(1) { animation: bite-1 1.75s ease-in-out infinite; }
+.loader-bite:nth-child(2) { animation: bite-2 1.75s ease-in-out infinite; }
+.loader-bite:nth-child(3) { animation: bite-3 1.75s ease-in-out infinite; }
+.loader-bite:nth-child(4) { animation: bite-4 1.75s ease-in-out infinite; }
+.loader-bite:nth-child(5) { animation: bite-5 1.75s ease-in-out infinite; }
+@keyframes bite-1 { 0%,88% { opacity:1; transform:scale(1) translateY(0);} 92%,100% { opacity:0; transform:scale(.5) translateY(4px);} }
+@keyframes bite-2 { 0%,14% { opacity:0; transform:scale(.5) translateY(4px);} 18%,88% { opacity:1; transform:scale(1) translateY(0);} 92%,100% { opacity:0; transform:scale(.5) translateY(4px);} }
+@keyframes bite-3 { 0%,28% { opacity:0; transform:scale(.5) translateY(4px);} 32%,88% { opacity:1; transform:scale(1) translateY(0);} 92%,100% { opacity:0; transform:scale(.5) translateY(4px);} }
+@keyframes bite-4 { 0%,42% { opacity:0; transform:scale(.5) translateY(4px);} 46%,88% { opacity:1; transform:scale(1) translateY(0);} 92%,100% { opacity:0; transform:scale(.5) translateY(4px);} }
+@keyframes bite-5 { 0%,56% { opacity:0; transform:scale(.5) translateY(4px);} 60%,88% { opacity:1; transform:scale(1) translateY(0);} 92%,100% { opacity:0; transform:scale(.5) translateY(4px);} }
