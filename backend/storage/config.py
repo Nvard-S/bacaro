@@ -10,7 +10,14 @@ from .sqlite_repository import SqliteBarRepository
 
 
 def _database_url():
-    url = os.environ.get("DATABASE_URL")
+    url = (os.environ.get("DATABASE_URL") or "").strip()
+    # Tolerate a common paste mistake: the whole "DATABASE_URL=..." line (or a
+    # value wrapped in quotes) pasted into the value field. Normalize it so a
+    # stray prefix or quotes don't break the connection.
+    if url.lower().startswith("database_url="):
+        url = url.split("=", 1)[1].strip()
+    if len(url) >= 2 and url[0] == url[-1] and url[0] in "\"'":
+        url = url[1:-1].strip()
     if not url:
         raise RuntimeError("DATA_BACKEND=postgres requires DATABASE_URL to be set in .env")
     return url
