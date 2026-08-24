@@ -1,5 +1,6 @@
 flask>=3.0
 flask-cors>=4.0
+flask-limiter>=3.8
 requests>=2.31
 openai>=1.30
 chromadb>=0.5

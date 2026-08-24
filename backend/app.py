@@ -15,6 +15,9 @@ from openai import OpenAI
 from rank_bm25 import BM25Okapi
 from flask import Flask, request, jsonify, g, Response
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from storage.config import get_repository, get_index_store
 
@@ -35,12 +38,28 @@ index_store = get_index_store(APP_DIR)
 
 app = Flask(__name__)
 
+# Render terminates TLS at its proxy, so the real client IP arrives in
+# X-Forwarded-For. Trust one proxy hop so rate limiting keys on the actual
+# visitor, not Render's proxy address.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)
+
 # This backend is now an API only -- the public site and admin panel are
 # separate frontends on their own domains, so the browser calls this API
 # cross-origin. CORS_ORIGINS lists the domains allowed to call it (comma-
-# separated); "*" is fine here because auth uses a Bearer token, not cookies.
+# separated); "*" is a fallback, but production sets it to the real frontends.
 CORS_ORIGINS = [o.strip() for o in (os.environ.get("CORS_ORIGINS") or "*").split(",") if o.strip()]
 CORS(app, resources={r"/*": {"origins": CORS_ORIGINS}})
+
+# Per-IP rate limiting. No global default -- only the public search route is
+# capped (below), since that's the one that spends money on OpenAI per call.
+# In-memory storage is fine here: the service runs a single gunicorn worker.
+limiter = Limiter(key_func=get_remote_address, app=app)
+
+
+@app.errorhandler(429)
+def ratelimit_handler(e):
+    # Return JSON (not Flask's HTML page) so the frontend shows a clean message.
+    return jsonify({"error": "Too many requests — please slow down a moment."}), 429
 
 # ---------- Admin access control (Supabase Auth) ----------
 # The admin panel is gated by Supabase Auth: the browser signs in against
@@ -1292,6 +1311,7 @@ def _log_search(query, neighborhood, tags, answer, sources, analyzed, geo_info):
 
 
 @app.route("/api/browse", methods=["POST"])
+@limiter.limit("30 per minute; 300 per day")
 def browse():
     data = request.get_json(force=True)
     neighborhood = data.get("neighborhood") or "All Venice"
