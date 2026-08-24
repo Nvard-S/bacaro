@@ -50,11 +50,18 @@ ADMIN_EMAILS = {
 }
 _ADMIN_AUTH_CONFIGURED = bool(SUPABASE_URL and SUPABASE_ANON_KEY and ADMIN_EMAILS)
 
-# Paths reachable without signing in: the public discover page and the two
-# endpoints it calls, the admin page shell itself (just HTML + the login form,
-# it holds no data), and the small config endpoint the login form reads.
-# Every other route requires a valid admin token.
-PUBLIC_PATHS = {"/", "/discover", "/api/tags", "/api/browse", "/api/auth-config"}
+# The admin panel is served at a hard-to-guess path (set ADMIN_PATH in the
+# environment, e.g. "manage-9f3a2c") so it isn't sitting at an obvious URL.
+# This is obscurity layered on top of the real protection (Supabase Auth on
+# every admin API call) -- not a substitute for it. Defaults to "admin" for
+# local development.
+ADMIN_PATH = (os.environ.get("ADMIN_PATH") or "admin").strip("/")
+
+# Paths reachable without signing in: the public site (served at root) and
+# the two endpoints it calls, the admin page shell itself (just HTML + the
+# login form) at its obscure path, and the config endpoint the login form
+# reads. Every other route requires a valid admin token.
+PUBLIC_PATHS = {"/", "/api/tags", "/api/browse", "/api/auth-config", f"/{ADMIN_PATH}"}
 
 
 def _verify_admin_token(token):
@@ -1017,13 +1024,16 @@ def bars_query(neighborhood):
 # ---------- Routes ----------
 
 @app.route("/")
-def index():
-    return render_template("index.html")
-
-
-@app.route("/discover")
-def discover():
+def public_site():
+    # The friend-facing site lives at the root now.
     return render_template("discover.html")
+
+
+@app.route(f"/{ADMIN_PATH}")
+def admin_page():
+    # Admin panel at its obscure path; still gated by Supabase Auth on every
+    # data/action endpoint it calls.
+    return render_template("index.html")
 
 
 @app.route("/api/auth-config")
