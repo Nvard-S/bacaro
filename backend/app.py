@@ -512,6 +512,42 @@ def build_indexes(openai_client):
     return len(docs)
 
 
+def rebuild_bm25_from_db():
+    """Rebuild just the BM25 half of the index from the database. Cheap --
+    no OpenAI calls -- so it can run at startup and make AI search work
+    immediately after every deploy/restart, without a manual "Index bars".
+    The vector half lives in pgvector and persists on its own."""
+    global _bm25_state
+    rows = repository.list_bars()
+    docs, ids = [], []
+    for row in rows:
+        doc = build_bar_document(row)
+        if not doc:
+            continue
+        docs.append(doc)
+        ids.append(row["place_id"])
+    bm25 = BM25Okapi([tokenize(d) for d in docs]) if docs else None
+    with _bm25_lock:
+        _bm25_state = {"index": bm25, "place_ids": ids}
+        try:
+            save_bm25_index()
+        except Exception:
+            pass
+    return len(ids)
+
+
+# On startup, make sure BM25 is ready. Prefer a cached pickle from this
+# instance; if there isn't one (e.g. a fresh deploy wiped the disk), rebuild
+# from the database so search works right away instead of needing a manual
+# re-index. Best-effort: if the DB is briefly unreachable, the app still
+# starts and a later "Index bars" (or restart) will populate it.
+if not _bm25_state["place_ids"]:
+    try:
+        rebuild_bm25_from_db()
+    except Exception:
+        pass
+
+
 def haversine_km(lat1, lon1, lat2, lon2):
     r = 6371.0
     p1, p2 = math.radians(lat1), math.radians(lat2)
