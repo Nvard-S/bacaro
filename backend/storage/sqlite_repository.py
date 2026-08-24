@@ -51,6 +51,15 @@ class SqliteBarRepository(BarRepository):
         ]:
             if col not in cols:
                 conn.execute(f"ALTER TABLE bars ADD COLUMN {col} {coltype}")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS search_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT,
+                query TEXT, neighborhood TEXT, tags TEXT, mode TEXT,
+                analyzed INTEGER, answer TEXT, results TEXT,
+                location_detected TEXT, geo_filter_applied INTEGER
+            )
+        """)
         conn.commit()
         conn.close()
 
@@ -148,3 +157,16 @@ class SqliteBarRepository(BarRepository):
         ).fetchall()
         conn.close()
         return [dict(r) for r in rows]
+
+    def log_search(self, entry):
+        cols = ["created_at", "query", "neighborhood", "tags", "mode", "analyzed",
+                "answer", "results", "location_detected", "geo_filter_applied"]
+        entry = {**entry, "created_at": datetime.now(timezone.utc).isoformat()}
+        conn = self._connect()
+        placeholders = ",".join("?" * len(cols))
+        conn.execute(
+            f"INSERT INTO search_logs ({', '.join(cols)}) VALUES ({placeholders})",
+            tuple(entry.get(c) for c in cols),
+        )
+        conn.commit()
+        conn.close()

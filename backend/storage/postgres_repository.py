@@ -114,3 +114,17 @@ class PostgresBarRepository(BarRepository):
         rows = [dict(r) for r in cur.fetchall()]
         conn.close()
         return rows
+
+    def log_search(self, entry):
+        # created_at uses the table's now() default.
+        cols = ["query", "neighborhood", "tags", "mode", "analyzed",
+                "answer", "results", "location_detected", "geo_filter_applied"]
+        conn = self._connect()
+        cur = conn.cursor()
+        placeholders = ", ".join(["%s"] * len(cols))
+        cur.execute(
+            f"INSERT INTO search_logs ({', '.join(cols)}) VALUES ({placeholders})",
+            tuple(entry.get(c) for c in cols),
+        )
+        conn.commit()
+        conn.close()

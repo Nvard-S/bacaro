@@ -46,6 +46,12 @@ class BarRepository(ABC):
     def bars_missing_instagram(self):
         """Bars with a website but no instagram_url yet."""
 
+    @abstractmethod
+    def log_search(self, entry):
+        """Append one search-log row. `entry` is a dict of column values
+        (created_at is set by the repository). Best-effort: callers wrap this
+        so a logging failure never breaks the search response."""
+
 
 class IndexStore(ABC):
     """Vector search backing store. Only ids and embeddings are needed --

@@ -1233,6 +1233,28 @@ def find_instagram_progress():
         return jsonify(dict(_social_progress))
 
 
+def _log_search(query, neighborhood, tags, answer, sources, analyzed, geo_info):
+    """Record a search and its full result set. Best-effort: any failure here
+    is swallowed so logging never affects the user's search."""
+    try:
+        repository.log_search({
+            "query": query,
+            "neighborhood": neighborhood,
+            "tags": json.dumps(tags, ensure_ascii=False),
+            "mode": "search",
+            "analyzed": analyzed,
+            "answer": answer,
+            "results": json.dumps([
+                {"place_id": s.get("place_id"), "name": s.get("name"), "confirmed": s.get("confirmed")}
+                for s in sources
+            ], ensure_ascii=False),
+            "location_detected": geo_info.get("location_detected"),
+            "geo_filter_applied": geo_info.get("geo_filter_applied"),
+        })
+    except Exception:
+        pass
+
+
 @app.route("/api/browse", methods=["POST"])
 def browse():
     data = request.get_json(force=True)
@@ -1265,6 +1287,7 @@ def browse():
         answer, sources, analyzed, geo_info = answer_query(
             query, top_n, api_key, neighborhood, GOOGLE_PLACES_API_KEY, tags
         )
+        _log_search(query, neighborhood, tags, answer, sources, analyzed, geo_info)
         return jsonify({
             "ok": True, "mode": "search", "answer": answer, "sources": sources,
             "analyzed": analyzed, "neighborhood": neighborhood, **geo_info,
