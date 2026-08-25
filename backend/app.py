@@ -452,6 +452,7 @@ RAG_SYSTEM_PROMPT = (
 )
 
 _bm25_lock = threading.Lock()
+_bm25_rebuild_lock = threading.Lock()  # ensures only one rebuild runs at a time
 _bm25_state = {"index": None, "place_ids": []}
 
 _TOKEN_RE = re.compile(r"[a-zA-ZÀ-ÿ0-9]+")
@@ -560,6 +561,27 @@ def rebuild_bm25_from_db():
         except Exception:
             pass
     return len(ids)
+
+
+def ensure_bm25_ready():
+    """Return True if the BM25 index has entries, rebuilding it from the DB
+    if it's empty. This self-heals the case where the startup rebuild failed
+    (e.g. the DB was still waking) -- the first search then rebuilds against a
+    now-warm DB. Only one rebuild runs at a time; concurrent callers wait for
+    it and re-check."""
+    with _bm25_lock:
+        if _bm25_state["place_ids"]:
+            return True
+    with _bm25_rebuild_lock:
+        with _bm25_lock:
+            if _bm25_state["place_ids"]:
+                return True
+        try:
+            rebuild_bm25_from_db()
+        except Exception:
+            app.logger.exception("BM25 lazy rebuild failed")
+    with _bm25_lock:
+        return bool(_bm25_state["place_ids"])
 
 
 # On startup, make sure BM25 is ready. Prefer a cached pickle from this
@@ -1158,9 +1180,7 @@ def rag_search():
         top_n = 5
     top_n = max(1, min(20, top_n))
 
-    with _bm25_lock:
-        has_index = bool(_bm25_state["place_ids"])
-    if not has_index:
+    if not ensure_bm25_ready():
         return jsonify({"error": 'No index found. Click "Index bars" first.'}), 400
 
     try:
@@ -1343,10 +1363,10 @@ def browse():
     api_key = OPENAI_API_KEY
     if not api_key:
         return jsonify({"error": "The search index isn't set up yet. Try again later."}), 400
-    with _bm25_lock:
-        has_index = bool(_bm25_state["place_ids"])
-    if not has_index:
-        return jsonify({"error": "The search index isn't set up yet. Try again later."}), 400
+    # Build the index on demand if it isn't ready yet (self-heals a failed
+    # startup rebuild). Returns a soft "warming up" if it still can't build.
+    if not ensure_bm25_ready():
+        return jsonify({"error": "Search is still warming up. Try again in a moment."}), 503
 
     try:
         top_n = int(data.get("top_n", 8))
