@@ -1136,8 +1136,9 @@ def rag_index():
     try:
         indexed = build_indexes(OpenAI(api_key=api_key))
         return jsonify({"ok": True, "indexed": indexed})
-    except Exception as e:
-        return jsonify({"error": f"Indexing failed: {e}"}), 502
+    except Exception:
+        app.logger.exception("Indexing failed")
+        return jsonify({"error": "Indexing failed. Check the server logs."}), 502
 
 
 @app.route("/api/rag-search", methods=["POST"])
@@ -1171,8 +1172,9 @@ def rag_search():
             "analyzed": analyzed, "neighborhood": neighborhood,
             **geo_info,
         })
-    except Exception as e:
-        return jsonify({"error": f"Search failed: {e}"}), 502
+    except Exception:
+        app.logger.exception("RAG search failed")
+        return jsonify({"error": "Search failed. Please try again."}), 502
 
 
 @app.route("/api/collect", methods=["POST"])
@@ -1195,9 +1197,9 @@ def collect():
         else:
             return jsonify({"error": f"Unknown neighborhood: {neighborhood}"}), 400
     except requests.HTTPError as e:
-        return jsonify({
-            "error": f"Google API error: {e.response.status_code} {e.response.text}"
-        }), 502
+        app.logger.exception("Google Places API error during collection")
+        status = e.response.status_code if e.response is not None else "?"
+        return jsonify({"error": f"Google API error (status {status})."}), 502
 
 
 @app.route("/api/fetch-cicchetti-content", methods=["POST"])
@@ -1361,8 +1363,9 @@ def browse():
             "ok": True, "mode": "search", "answer": answer, "sources": sources,
             "analyzed": analyzed, "neighborhood": neighborhood, **geo_info,
         })
-    except Exception as e:
-        return jsonify({"error": f"Search failed: {e}"}), 502
+    except Exception:
+        app.logger.exception("Public search failed")
+        return jsonify({"error": "Search failed. Please try again."}), 502
 
 
 @app.route("/api/summary")
