@@ -1,90 +1,90 @@
 # Bacaro Hop
 
-Поиск венецианских **бакаро** и **чикетти** — маленьких баров, где пьют бокал вина (*ombra*) и закусывают крошечными тарелочками. Можно листать по районам и тегам, а можно **спросить обычными словами** («natural wine near Rialto», «где недорого поесть sarde in saor») — и получить ответ, собранный по реальным данным о барах.
+Find Venice's **bacari** and **cicchetti** — the tiny bars where you sip a small glass of wine (*ombra*) and snack on little plates. Browse by neighborhood and tag, or just **ask in plain words** ("natural wine near Rialto", "cheap place for sarde in saor") and get an answer built from real data about the bars.
 
-🔗 **Сайт:** https://bacarohop.onrender.com
+🔗 **Live site:** https://bacarohop.onrender.com
 
-## Что это
+## What it is
 
-Небольшой сервис, который помогает туристу и венецианцу найти «свой» бакаро. Под капотом — собственный каталог баров по шести сестьере Венеции (Cannaregio, Castello, San Marco, Dorsoduro, San Polo, Santa Croce), обогащённый содержимым сайтов заведений и отзывами, с **гибридным AI-поиском**, который отвечает только на основе собранных данных (а не «из головы» модели).
+A small service that helps tourists and Venetians find their kind of bacaro. Under the hood is a purpose-built catalogue of bars across Venice's six *sestieri* (Cannaregio, Castello, San Marco, Dorsoduro, San Polo, Santa Croce), enriched with content from the bars' own websites and their reviews, powered by a **hybrid AI search** that answers strictly from the collected data — not from the model's imagination.
 
-Ключевая идея — **не выдумывать**: на каждый бар в ответе стоит пометка, подтверждают ли собранные данные, что он реально отвечает запросу, или это лишь возможное совпадение.
+The guiding principle is **don't make things up**: every bar in an answer is flagged as either *confirmed by the data* for your question, or merely a *possible match*.
 
-## Как это работает
+## How it works
 
-Данные проходят через конвейер (запускается из закрытой админки):
+The data flows through a pipeline (run from the private admin panel):
 
-1. **Сбор** — через Google Places API по итальяноязычным запросам («cicchetti a…», «bacaro a…») собираются заведения по каждому сестьере.
-2. **Обогащение** — сайты баров сканируются (Parallel Extract API) на предмет описаний чикетти, цен, часов, формата (стойка vs посадка).
-3. **Тегирование** — модель (OpenAI `gpt-4o-mini`) размечает каждый бар по 8 тегам (Budget-friendly, Local favorite, Canal-side, Open late, Standing bacaro, Natural wine, Lively, Vegan/Veg/GF) и пишет короткое честное описание.
-4. **Индексация** — из описаний и отзывов строится поисковый индекс: векторный (эмбеддинги `text-embedding-3-small` в **pgvector**) и ключевой (**BM25**).
-5. **Поиск** — на запрос пользователя два индекса объединяются через **Reciprocal Rank Fusion**, а затем модель формулирует ответ по топ-кандидатам, помечая каждый как «подтверждён данными» или «возможное совпадение».
+1. **Collect** — via the Google Places API, using Italian-language queries ("cicchetti a…", "bacaro a…"), bars are gathered for each sestiere.
+2. **Enrich** — each bar's website is scanned (Parallel Extract API) for cicchetti details: small plates, prices, hours, format (standing counter vs. sit-down).
+3. **Tag** — a model (OpenAI `gpt-4o-mini`) labels each bar with 8 tags (Budget-friendly, Local favorite, Canal-side, Open late, Standing bacaro, Natural wine, Lively, Vegan/Veg/GF) and writes a short, honest blurb.
+4. **Index** — a search index is built from the blurbs and reviews: vector (`text-embedding-3-small` embeddings in **pgvector**) and keyword (**BM25**).
+5. **Search** — for a user's question the two indexes are merged with **Reciprocal Rank Fusion**, then the model writes an answer over the top candidates, marking each as "confirmed by the data" or "possible match".
 
-> Данные — настолько хороши, насколько хороши отзывы Google и содержимое сайтов баров. Часы работы и цены меняются, поэтому сервис — это отправная точка для похода, а не справочник последней инстанции.
+> The data is only as good as Google's reviews and the bars' own websites. Hours and prices change, so the service is a starting point for a *giro*, not a last-word reference.
 
-## Архитектура
+## Architecture
 
-Сервис намеренно разделён на три независимые части:
+The service is deliberately split into three independent parts:
 
-| Часть | Что это | Технологии |
+| Part | What it is | Stack |
 |---|---|---|
-| **Бэкенд** | только API (JSON) | Python / Flask, Render |
-| **Публичный сайт** | то, что видят друзья | React + Vite + Tailwind, статика на CDN |
-| **Админка** | запуск конвейера, за авторизацией | React + Vite, статика на CDN |
-| **База** | каталог + эмбеддинги + логи поиска | Supabase Postgres + pgvector |
+| **Backend** | API only (JSON) | Python / Flask, Render |
+| **Public site** | what friends see | React + Vite + Tailwind, static on CDN |
+| **Admin** | runs the pipeline, behind auth | React + Vite, static on CDN |
+| **Database** | catalogue + embeddings + search logs | Supabase Postgres + pgvector |
 
-Доступ к базе — только с бэкенда (Data API Supabase выключен). Админка закрыта авторизацией через **Supabase Auth** (по списку разрешённых email), причём защищён не только интерфейс, но и сами команды бэкенда.
+The database is reachable only from the backend (Supabase's Data API is turned off). The admin is gated by **Supabase Auth** (an allow-list of emails), and the protection covers not just the UI but the backend commands it calls.
 
-## Локальный запуск (кратко)
+## Running locally (quick start)
 
 ```bash
-# бэкенд
+# backend
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # впишите свои ключи
+cp .env.example .env   # fill in your own keys
 python run_migrations.py
 python app.py
 
-# фронтенд (в отдельном терминале)
+# frontend (in a separate terminal)
 cd frontend/public
 npm install
 npm run dev
 ```
 
-Секреты (ключи API, строка подключения к базе) живут только в переменных окружения — **никогда в коде и не в репозитории**.
+Secrets (API keys, the database connection string) live only in environment variables — **never in the code or the repository**.
 
-## Как ещё можно использовать этот подход
+## Reusing this approach for other problems
 
-Сама архитектура — универсальный шаблон: **свой локальный каталог + гибридный смысловой поиск + ответы модели строго по своим данным, с админ-конвейером сбора/обогащения/разметки/индексации**. Меняя источник данных, набор тегов и промпты, тот же скелет решает совсем другие задачи. Например:
+The architecture is a general template: **your own local catalogue + hybrid semantic search + model answers grounded strictly in your data, with an admin pipeline to collect / enrich / tag / index.** Swap the data source, the tag set, and the prompts, and the same skeleton solves very different problems. For example:
 
-1. **Тот же формат, другой город/тема** — спешелти-кофейни, независимые книжные и виниловые магазины, винтажные лавки, тихие места для работы с ноутбуком.
-2. **Нишевые фильтры еды** — веган/безглютен-навигатор по ресторанам, где важно не «звёзды», а конкретные диетические факты из отзывов и меню.
-3. **Активности и места** — маршруты для хайкинга, скалолазные секторы, музеи и выставки (со сменой источника данных с Google на профильный).
-4. **Внутренние знания** — «поиск с ответом по своим документам»: отзывы на товары, тикеты поддержки, объявления недвижимости — везде, где нужно задать вопрос словами и получить обоснованный ответ **со ссылками на источники**.
+1. **Same format, different city or theme** — specialty coffee shops, independent bookshops and record stores, vintage shops, quiet laptop-friendly spots.
+2. **Niche food filters** — a vegan / gluten-free navigator for restaurants, where what matters isn't star ratings but concrete dietary facts pulled from reviews and menus.
+3. **Places and activities** — hiking trails, climbing crags, museums and exhibitions (swapping Google for a domain-specific data source).
+4. **Internal knowledge** — "search-with-an-answer over your own documents": product reviews, support tickets, real-estate listings — anywhere you want to ask a question in plain words and get a grounded answer **with sources**.
 
-Неизменным остаётся паттерн: `собрать → обогатить → разметить → построить эмбеддинги → гибридный поиск → ответ, подкреплённый данными`.
+What stays constant is the pattern: `collect → enrich → tag → embed → hybrid search → answer backed by the data`.
 
-## Ограничения и следствия
+## Limitations and implications
 
-- **Покрытие = что вернул источник.** Каталог ограничен тем, что отдаёт Google Places по заданным запросам; редкие места без онлайн-присутствия могут не попасть.
-- **Факты стареют.** Часы, цены, само существование бара меняются; данные из отзывов бывают устаревшими.
-- **Модель может ошибаться.** Ответ строится только по собранным данным и снабжён пометкой «подтверждено/возможно», но это снижает риск галлюцинаций, а не убирает его полностью.
-- **Обогащение — best-effort.** Часть сайтов не читается (бот-защита, таймауты) → не каждый бар обогащён; ссылка на Instagram подбирается эвристикой и не гарантирована.
-- **Языковой перекос.** Сервис намеренно смещён в сторону итальянского контента — это плюс для локальности, но минус для источников на других языках.
-- **Стоимость растёт с числом поисков.** Каждый умный запрос — вызов OpenAI; защищено rate-limiting и лимитом трат, но масштабирование стоит денег.
-- **Качество поиска не измерено формально** — нет размеченного набора запросов для оценки ранжирования.
+- **Coverage = whatever the source returns.** The catalogue is limited to what Google Places surfaces for the given queries; rare spots with no online presence may be missed.
+- **Facts go stale.** Hours, prices, and whether a bar still exists all change; review-derived facts can be out of date.
+- **The model can be wrong.** Answers are built only from the collected data and carry a confirmed/possible flag — this lowers the risk of hallucination but does not remove it.
+- **Enrichment is best-effort.** Some sites can't be read (bot protection, timeouts) so not every bar is enriched; the Instagram link is matched heuristically and isn't guaranteed.
+- **Language bias.** The service is deliberately skewed toward Italian-language content — a plus for locality, a minus for sources in other languages.
+- **Cost scales with searches.** Every smart query is an OpenAI call; this is protected by rate limiting and a spending cap, but scaling up costs money.
+- **Search quality isn't formally measured** — there's no labelled query set to evaluate the ranking against.
 
-## Что можно улучшить
+## What could be improved
 
-- **Оценочный harness** — размеченные запросы, чтобы измерять и настраивать ранжирование (веса слияния, ре-ранкинг кросс-энкодером).
-- **Больше и лучше данных** — официальные меню, живые часы работы, больше отзывов; фильтр «открыто сейчас» и сортировка по расстоянию, карта.
-- **Кеширование** — повторяющихся запросов и эмбеддингов; вынести BM25 в постоянное хранилище.
-- **Персонализация** — аккаунты, избранное, шеринг подборок.
-- **Мультиязычность** — интерфейс и перевод контента.
-- **Обратная связь** — пользователь помечает неверные ответы → данные для улучшения.
-- **Надёжность в масштабе** — transaction-пулер/пул соединений к базе, CI (прогон тестов фронтенда и проверок бэкенда на каждый PR).
+- **An evaluation harness** — labelled queries to measure and tune ranking (fusion weights, a cross-encoder re-rank).
+- **More and better data** — official menus, live opening hours, more reviews; an "open now" filter, distance sorting, a map view.
+- **Caching** — of repeated queries and embeddings; move BM25 to persistent storage.
+- **Personalization** — accounts, favorites, shareable lists.
+- **Multilingual** — UI and content translation.
+- **A feedback loop** — users flag wrong answers, feeding data back into improvements.
+- **Reliability at scale** — a transaction pooler / connection pool to the database, and CI (run the frontend tests and backend checks on every PR).
 
-## Лицензия
+## License
 
-MIT — см. [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
