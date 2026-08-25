@@ -565,13 +565,19 @@ def rebuild_bm25_from_db():
 # On startup, make sure BM25 is ready. Prefer a cached pickle from this
 # instance; if there isn't one (e.g. a fresh deploy wiped the disk), rebuild
 # from the database so search works right away instead of needing a manual
-# re-index. Best-effort: if the DB is briefly unreachable, the app still
-# starts and a later "Index bars" (or restart) will populate it.
-if not _bm25_state["place_ids"]:
+# re-index. This runs in a BACKGROUND THREAD so the web server always boots
+# immediately and binds its port -- a slow or sleeping database can never
+# block startup. Search returns "index not ready" for the second or two it
+# takes the thread to finish.
+def _startup_bm25_rebuild():
     try:
         rebuild_bm25_from_db()
     except Exception:
         pass
+
+
+if not _bm25_state["place_ids"]:
+    threading.Thread(target=_startup_bm25_rebuild, daemon=True).start()
 
 
 def haversine_km(lat1, lon1, lat2, lon2):

@@ -10,7 +10,7 @@ class PgVectorIndexStore(IndexStore):
         self.connection_string = connection_string
 
     def _connect(self):
-        conn = psycopg2.connect(self.connection_string)
+        conn = psycopg2.connect(self.connection_string, connect_timeout=15)
         register_vector(conn)
         return conn
 

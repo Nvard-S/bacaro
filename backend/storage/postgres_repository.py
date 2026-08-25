@@ -15,7 +15,9 @@ class PostgresBarRepository(BarRepository):
         self.connection_string = connection_string
 
     def _connect(self):
-        conn = psycopg2.connect(self.connection_string)
+        # connect_timeout so a sleeping/unreachable DB fails fast instead of
+        # hanging a request (or the startup index rebuild) indefinitely.
+        conn = psycopg2.connect(self.connection_string, connect_timeout=15)
         conn.cursor_factory = psycopg2.extras.RealDictCursor
         return conn
 
