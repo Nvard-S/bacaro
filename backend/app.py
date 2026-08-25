@@ -16,8 +16,6 @@ from rank_bm25 import BM25Okapi
 from flask import Flask, request, jsonify, g, Response
 from flask_cors import CORS
 from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
-from werkzeug.middleware.proxy_fix import ProxyFix
 
 from storage.config import get_repository, get_index_store
 
@@ -38,11 +36,6 @@ index_store = get_index_store(APP_DIR)
 
 app = Flask(__name__)
 
-# Render terminates TLS at its proxy, so the real client IP arrives in
-# X-Forwarded-For. Trust one proxy hop so rate limiting keys on the actual
-# visitor, not Render's proxy address.
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)
-
 # This backend is now an API only -- the public site and admin panel are
 # separate frontends on their own domains, so the browser calls this API
 # cross-origin. CORS_ORIGINS lists the domains allowed to call it (comma-
@@ -53,7 +46,21 @@ CORS(app, resources={r"/*": {"origins": CORS_ORIGINS}})
 # Per-IP rate limiting. No global default -- only the public search route is
 # capped (below), since that's the one that spends money on OpenAI per call.
 # In-memory storage is fine here: the service runs a single gunicorn worker.
-limiter = Limiter(key_func=get_remote_address, app=app)
+def _client_ip():
+    # Prefer Cloudflare's real-client header (can't be spoofed past CF); else
+    # the first X-Forwarded-For entry (the visitor behind Render's proxy);
+    # else the socket address. Keying on the proxy IP would let one counter
+    # cover everyone or, worse, vary per request and never accumulate.
+    cf = request.headers.get("CF-Connecting-IP")
+    if cf:
+        return cf.strip()
+    xff = request.headers.get("X-Forwarded-For", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+
+limiter = Limiter(key_func=_client_ip, app=app)
 
 
 @app.errorhandler(429)
